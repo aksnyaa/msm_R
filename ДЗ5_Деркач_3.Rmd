@@ -1,0 +1,220 @@
+---
+title: "ДЗ5_Деркач_3"
+author: "Деркач Аксинья"
+date: "2025-04-15"
+output: html_document
+---
+
+```{r message=FALSE, warning=FALSE}
+library(knitr)
+library(kableExtra)
+library(magrittr)
+library(openxlsx)
+library(pander)
+library(caret)
+library(rio)
+library(factoextra)
+library(corrplot)
+library(cluster)
+library(biotools)
+library(DescTools)
+library(EnvStats)
+library(outliers)
+library(psych)
+library(robustHD)
+library(ggpubr)
+library(ggplot2)
+library(lmtest)
+library(sjPlot)
+library(GGally)
+library(leaps)
+library(questionr)
+library(ppcor)
+```
+
+> 1. Рассмотреть возможность использования данных об индексе качества жизни для выделения кластеров (оценка корреляционной матрицы).
+
+```{r}
+df <- read.xlsx('russian_regions.xlsx', sheet = 'Data')
+```
+
+```{r, echo = FALSE}
+desc <- read.xlsx('russian_regions.xlsx', sheet = 'Description of data')
+kbl(desc, caption = "Таблица 1. Описание данных", booktabs = T, 
+    col.names = c("Переменная", "Описание переменной")) %>% 
+  kable_classic_2(html_font = "Cambria", font_size = 10, full_width = F) %>%
+  pack_rows("Зависимая переменная", 1, 1) %>%
+  pack_rows("Уровень жизни", 2, 3) %>%
+  pack_rows("Медицина", 4, 6) %>%
+  pack_rows("Экология", 7, 8) %>%
+  pack_rows("Рынок труда", 9, 17) %>%
+  pack_rows("Прочее", 18, 18)
+```
+
+Выбираем только числовые переменные (исключаем регион и область).
+
+```{r}
+df1 <- df[,2:18]
+```
+
+Перед кластеризацией нужно проверить корреляции между переменными. Если переменные сильно коррелируют, это может исказить результаты кластеризации.
+
+```{r}
+corrplot(cor(scale(df1)), type = "full", method = "circle", tl.col = "black", tl.srt = 45, tl.cex = 0.5)
+```
+
+
+Имеются сильно коррелирующие переменные, надо их исключить.
+Удалим "AVERAGE_INCOME", "GRP", "ENTERPRISES_NUM_GROWTH_RATE", "MALE_WAGE", "LABOR_RATE".
+
+```{r}
+vars_to_remove <- c("AVERAGE_INCOME", "GRP", "ENTERPRISES_NUM_GROWTH_RATE", "MALE_WAGE", "LABOR_RATE")
+df2 <- df1[, !colnames(df1) %in% vars_to_remove]
+```
+
+Стандартизируем признаки.
+
+```{r}
+df_filtered <- as.data.frame(scale(df2))
+```
+
+Исследуем однородность выборки. Устраним выбросы, так как в дальнейшем будут использоваться методы, чувствительные к выбросам.
+
+```{r}
+boxplot(df_filtered)
+```
+
+Для упрощения создадим функцию, которая удалит выбросы для каждой переменной. Используется метод 1.5IQR.
+
+```{r}
+remove_outliers_iqr <- function(data) {
+
+  outliers <- apply(df_filtered, 2, function(x) {
+    qnt <- quantile(x, probs = c(0.25, 0.75), na.rm = TRUE)
+    iqr <- 1.5 * IQR(x, na.rm = TRUE)
+    x < (qnt[1] - iqr) | x > (qnt[2] + iqr)
+  })
+  
+  data[rowSums(outliers) == 0, ]
+}
+
+df_cleaned <- remove_outliers_iqr(df_filtered)
+```
+
+> 2. Выбрать и обосновать оптимальное число кластеров.
+
+Метод локтя:
+
+```{r}
+fviz_nbclust(df_cleaned, kmeans, method = 'wss') +
+  labs(x = 'Число кластеров', y = 'Сумма внутрикластерных дисперсий',
+       title = 'Зависимость WSS от числа кластеров')
+```
+
+Смотрим на изменение наклона графика. Линия становится более пологой в нескольких местах. Сложно точно сказать, где изменение больше, поэтому проверим число кластеров еще одним методом.
+
+Метод силуэтов:
+
+```{r}
+fviz_nbclust(df_cleaned, kmeans, method = 'silhouette') +
+  labs(x = 'Число кластеров', y = 'Средняя ширина силуэта по всем точкам',
+       title = 'Зависимость средней ширины силуэта от числа кластеров')
+```
+
+Тут, очевидно, k=2, поэтому остановимся на этом числе кластеров.
+
+> 3. Провести иерархическую кластеризацию двумя разными методами с оптимальным числом кластеров (k=2).
+
+1) Метод Варда:
+
+```{r}
+hclust_w <- hcut(df_cleaned, hc_metric = 'euclidian', hc_method = 'ward.D2')
+```
+
+```{r, warning = FALSE, message = FALSE}
+hclust_w$labels <- df$REGION
+fviz_dend(hclust_w,
+          cex = 0.35, 
+          color_labels_by_k = TRUE, 
+          main = 'Дендрограмма (принцип Варда)', ylab = 'Расстояние')
+```
+
+2) Метод ближнего соседа:
+
+```{r}
+hclust_nn <- hcut(df_cleaned, hc_metric = 'euclidian', hc_method = 'single')
+```
+
+```{r, warning = FALSE, message = FALSE}
+hclust_nn$labels <- df$REGION
+fviz_dend(hclust_nn, cex = 0.35, color_labels_by_k = TRUE,
+          main = 'Дендрограмма (принцип ближнего соседа)', ylab = 'Расстояние')
+```
+
+Для обоих случаев 2 цвета = 2 кластера. Можно заметить, что состав и размеры кластеров значительно отличаются в зависимости от метода. Для второго метода один кластер состоит всего из одного региона (Чувашская республика), тогда как для первого метода к этому кластеру принадлежит еще 17 других регионов.
+
+> 4. Реализовать дивизимный алгоритм иерархической кластеризации. Сравнить результаты с предыдущим пунктом.
+
+```{r}
+hclust_di <- diana(df_cleaned, metric = "euclidean", stand = TRUE)
+hclust_di$order.lab <- df$REGION
+
+fviz_dend(hclust_di, k = 2, cex = 0.35, color_labels_by_k = TRUE,  
+          main = "Дивизимный алгоритм иерархической кластеризации, расстояние Евклида",
+          ylab = 'Расстояние')
+```
+
+Кластеры также отличаются по составу и размеру. Теперь в кластер с Чувашской республикой попало 8 регионов. 
+Различия в результатах между методами кластеризации связаны с принципиально разными подходами к формированию кластеров.
+
+> 5. Провести кластеризацию методом k-means для полной выборки, описать полученные кластеры на основе графика средних, провести тест на равенство средних по переменным для полученных кластеров (ANOVA).
+
+```{r}
+kmeans3 <- kmeans(df_cleaned, centers = 2)
+kmeans3
+```
+
+```{r}
+kmeans3$centers[1,]
+```
+
+Визуализируем результаты кластеризации через график средних. По графику средних дадим интерпретацию полученным кластерам.
+
+```{r}
+set.seed(123)
+kmeans_res <- kmeans(df_cleaned, centers = 2, nstart = 25)
+kmeans_res$size 
+centers <- t(kmeans_res$centers)
+colnames(centers) <- c("Cluster 1", "Cluster 2")
+
+ggplot(as.data.frame(centers), aes(x = factor(rownames(centers), levels = rownames(centers)))) +
+  geom_line(aes(y = `Cluster 1`, group = 1, color = "Cluster 1"), linewidth = 1.5) +
+  geom_line(aes(y = `Cluster 2`, group = 1, color = "Cluster 2"), linewidth = 1.5) +
+  labs(title = "График средних значений по кластерам (k=2)",
+       x = "Признаки",
+       y = "Среднее значение (стандартизованное)") +
+  scale_color_manual(values = c("Cluster 1" = "blueviolet", "Cluster 2" = "firebrick3")) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, size = 8))
+```
+
+Заметим, что кластеры заметно отличаются по признакам POP_PER_DOCTOR, SICKNESS_RATE, DISCHARGE_OF_POLLUTED_WASTEWATER.
+Кластер 2 значительно выше по всем трем показателям. Это может указывать на более плохую экологическую ситуацию и состояние здоровья населения в этом кластере. 
+
+Проверим значимость различий с помощью теста на равенство средних (ANOVA).
+
+```{r}
+df_cleaned$cluster <- kmeans_res$cluster
+
+anova_results <- lapply(df_cleaned[, -ncol(df_cleaned)], function(x) {
+  aov(x ~ cluster, data = df_cleaned)
+})
+
+p_values <- sapply(anova_results, function(x) summary(x)[[1]]$"Pr(>F)"[1])
+data.frame(Variable = names(p_values), p_value = round(p_values, 4))
+```
+
+Если p-value < 0.05, переменная значимо различается между кластерами. Это выполняется для POP_PER_DOCTOR, SICKNESS_RATE, DISCHARGE_OF_POLLUTED_WASTEWATER и ENTERPRISES_NUM. 
+
+Итого, различия между группами в том, что в кластере 1 находятся регионы с большим количеством врачей, более низкой заболеваемостью, меньшим объемом сброса загрязненных сточных вод, но при этом с большим числом предприятий в регионе, чем в кластере 2.
+
