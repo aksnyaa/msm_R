@@ -1,0 +1,141 @@
+---
+title: "ДЗ4_Деркач_3"
+author: "Деркач Аксинья"
+date: "2025-03-31"
+output: html_document
+---
+
+```{r message=FALSE, warning=FALSE}
+library(knitr)
+library(kableExtra)
+library(magrittr)
+library(openxlsx)
+library(pander)
+library(corrplot)
+library(caret)
+library(FactoMineR)
+library(factoextra)
+library(devtools)
+library(rio)
+library(corrplot)
+library(psych)
+library(ggpubr)
+library(REdaS)
+```
+
+## 1. Построить корреляционную матрицу, провести тест сферичности Бартлетта для данных по всем ФО, кроме Центрального. Сделать выводы о применимости МГК на выбранном наборе.
+
+```{r}
+df <- read.xlsx('russian_regions.xlsx', sheet = 'Data')
+```
+
+```{r, echo = FALSE}
+desc <- read.xlsx('russian_regions.xlsx', sheet = 'Description of data')
+kbl(desc, caption = "Таблица 1. Описание данных", booktabs = T, 
+    col.names = c("Переменная", "Описание переменной")) %>% 
+  kable_classic_2(html_font = "Cambria", font_size = 10, full_width = F) %>%
+  pack_rows("Зависимая переменная", 1, 1) %>%
+  pack_rows("Уровень жизни", 2, 3) %>%
+  pack_rows("Медицина", 4, 6) %>%
+  pack_rows("Экология", 7, 8) %>%
+  pack_rows("Рынок труда", 9, 17) %>%
+  pack_rows("Прочее", 18, 18)
+```
+
+Уберем Центральный ФО:
+
+```{r}
+df_filtered <- df[df$FEDERAL_OKRUG != "Центральный", ]
+table(df_filtered$FEDERAL_OKRUG) 
+```
+```{r}
+numeric_cols <- sapply(df_filtered, is.numeric)
+numeric_data <- df_filtered[, numeric_cols]
+
+cor_matrix <- cor(numeric_data, use = "complete.obs")
+
+corrplot(cor_matrix, 
+         method = "circle", 
+         tl.cex = 0.5, 
+         tl.col = "black", 
+         order = "hclust") 
+```
+
+Тест сферичности Бартлетта:
+
+```{r}
+bart_spher(numeric_data)
+```
+Значение p-value крайне мало, значит, отвергаем $H_0$.
+Это означает, что в данных есть статистически значимые корреляции между переменными (напр., FEM_SHARE_IN_EMPLOYEES и GRP, AVERAGE_INCOME, FEM_WAGE, MALE_WAGE - сильная отрицательная связь, FEM_WAGE и MALE_WAGE - сильная положительная связь).
+
+Тест подтверждает, что Метод главных компонент (PCA) применим к нашим данным.
+
+## 2. Провести МГК и определить оптимальное количество ГК для дальнейшего анализа, согласно доле суммарной вариации.
+
+Определим главные компоненты:
+
+```{r}
+pc <- PCA(numeric_data, graph = FALSE)
+summary(pc)
+```
+
+```{r}
+princomp <- princomp(numeric_data, cor = TRUE)
+summary(princomp)
+```
+
+Определим оптимальное число первых главных компонент (согласно доле суммарной вариации):
+
+```{r message=FALSE, warning=FALSE}
+cumvarsum <- cumsum(princomp$sdev^2 / sum(princomp$sdev^2))*100
+plot(cumvarsum, bstick = TRUE, type = 'b', main = '', xlab = 'Номер компоненты', 
+     ylab = 'Кумулятивное значение вариации, %')
+abline(h = 70, col = 'red', lwd = 2)
+abline(h = 80, col = 'blue', lwd = 2)
+text(x = 13, y = 75, '70%', col = 'red')
+text(x = 13, y = 85, '80%', col = 'blue')
+```
+
+Первые 4 компоненты покрывают ~70% суммарной вариации. Добавление 5-й и далее компонент даёт незначительный прирост дисперсии (кривая становится более пологая), т.е. для анализа достаточно 4 главных компонент.
+
+## 3. Построить регрессию на 3 главные компоненты, сделать выводы.
+
+Регрессия на исходные данные:
+
+```{r}
+model_orig <- lm(Q_OF_LIFE_INDEX ~ AVERAGE_INCOME + POP_PER_DOCTOR + UNEMPLOYMENT_RATE, 
+                data = numeric_data)
+summary(model_orig)
+```
+
+R² = 0.4284: Модель объясняет лишь 42.8% вариации индекса качества жизни. Для точного прогноза нужны либо дополнительные переменные, либо переход к модели на главных компонентах.
+
+Регрессия на 3 главные компоненты:
+
+```{r}
+pca_result <- PCA(numeric_data, graph = FALSE, ncp = 3)
+
+pca_scores <- as.data.frame(pca_result$ind$coord[, 1:3])
+colnames(pca_scores) <- c("PC1", "PC2", "PC3")
+pca_scores$QoL <- df_filtered$Q_OF_LIFE_INDEX
+```
+
+```{r}
+model_pca <- lm(QoL ~ PC1 + PC2 + PC3, data = pca_scores)
+
+summary(model_pca)
+```
+
+PC1: Каждое увеличение на 1 единицу повышает качество жизни на 1.78 пункта (p < 0.001).
+PC2: Наибольшее влияние (+5.24 пункта, p < 0.001).
+PC3: Слабее других (+1.41, p = 0.018), но значим.
+
+R² = 0.731: Модель объясняет 73.1% вариации качества жизни.
+
+## 4. Сравнить результаты с построенной линейной регрессией на все исходные данные.
+
+Сравнение моделей показало, что регрессия на ГК превосходит исходную: объяснённая дисперсия выросла с 42.8% до 73.1%.
+Все компоненты значимы (в исходной модели значим только уровень безработицы).
+Проблема мультиколлинеарности устранена (ГК ортогональны по построению).
+
